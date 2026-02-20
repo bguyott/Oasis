@@ -481,31 +481,36 @@ auto Multiply<Expression>::Integrate(const Expression& integrationVariable) cons
                     Variable { "C" }
                 };
 
-                return adder.Simplify();
+                return adder.Accept(simplifyVisitor).value();
             }
         }
 
         // TODO: Implement integration by parts
         // Detect whether integration by parts is appropriate
         // May need to simplify before and/or after
-        else if (auto mult = RecursiveCast<Multiply<Expression, Expression>>(*simplifiedMult); mult != nullptr) {
+        else {
             std::unique_ptr<Expression> u;
             std::unique_ptr<Expression> dv;
+
+            // Simplify the most and least significant operand
+            auto simplifiedMostSigOp = this->GetMostSigOp().Copy()->Accept(simplifyVisitor).value();
+            auto simplifiedLeastSigOp = this->GetLeastSigOp().Copy()->Accept(simplifyVisitor).value();
 
             // Check the rules of LIPET
 
             // May need to recursively cast u and dv before assigning them
             // so that method overrides can be realized.
 
-            // TODO: change dv to v and muliply by integration variable to correctly attain dv
+            // TODO: change dv to v and multiply by integration variable to correctly attain dv
+            // ^ Not needed because the integration variable is carried over from the integration methods
 
             // Logarithm
-            if (mult->GetMostSigOp().Is<Log<Expression, Expression>>()) {
-                u = mult->GetMostSigOp().Copy();
-                dv = mult->GetLeastSigOp().Copy();
-            } else if (mult->GetLeastSigOp().Is<Log<Expression, Expression>>()) {
-                u = mult->GetLeastSigOp().Copy();
-                dv = mult->GetMostSigOp().Copy();
+            if (simplifiedMostSigOp->Is<Log<Expression, Expression>>()) {
+                u = simplifiedMostSigOp->Copy();
+                dv = simplifiedLeastSigOp->Copy();
+            } else if (simplifiedLeastSigOp->Is<Log<Expression, Expression>>()) {
+                u = simplifiedLeastSigOp->Copy();
+                dv = simplifiedMostSigOp->Copy();
             }
 
             // TODO: Inverse trigonometry
@@ -514,53 +519,51 @@ auto Multiply<Expression>::Integrate(const Expression& integrationVariable) cons
             // Polynomial
             // TODO: Could also be exponent, in the case of (x^2)*sinx
             // TODO: Ensure all polynomial cases are accounted for
-            if (mult->GetMostSigOp().Is<Variable>()) {
-                u = mult->GetMostSigOp().Copy();
-                dv = mult->GetLeastSigOp().Copy();
-            } else if (mult->GetLeastSigOp().Is<Variable>()) {
-                u = mult->GetLeastSigOp().Copy();
-                dv = mult->GetMostSigOp().Copy();
+            if (simplifiedMostSigOp->Is<Variable>() || simplifiedMostSigOp->Is<Exponent<Variable, Expression>>()) {
+                u = simplifiedMostSigOp->Copy();
+                dv = simplifiedLeastSigOp->Copy();
+            } else if (simplifiedLeastSigOp->Is<Variable>() || simplifiedMostSigOp->Is<Exponent<Variable, Expression>>()) {
+                u = simplifiedLeastSigOp->Copy();
+                dv = simplifiedMostSigOp->Copy();
             }
 
             // Exponential - Euler's Number
-            if (mult->GetMostSigOp().Is<Exponent<EulerNumber, Expression>>()) {
-                u = mult->GetMostSigOp().Copy();
-                dv = mult->GetLeastSigOp().Copy();
-            } else if (mult->GetLeastSigOp().Is<Exponent<EulerNumber, Expression>>()) {
-                u = mult->GetLeastSigOp().Copy();
-                dv = mult->GetMostSigOp().Copy();
+            if (simplifiedMostSigOp->Is<Exponent<EulerNumber, Expression>>()) {
+                u = simplifiedMostSigOp->Copy();
+                dv = simplifiedLeastSigOp->Copy();
+            } else if (simplifiedLeastSigOp->Is<Exponent<EulerNumber, Expression>>()) {
+                u =simplifiedLeastSigOp->Copy();
+                dv = simplifiedMostSigOp->Copy();
             }
+
+
 
             // TODO: Trigonometry
             // Trigonometry is not implemented yet in Oasis
 
+
+
             // Differentiate u and integrate dv
             // TODO: ensure u & dv are casted as the correct types to allow method override
-            std::unique_ptr<Expression> du = u->Differentiate(*u);
-            std::unique_ptr<Expression> v = dv->Integrate(*dv);
+            std::unique_ptr<Expression> du = u->Differentiate(integrationVariable);
+            std::unique_ptr<Expression> v = dv->Integrate(integrationVariable);
 
-            // Apply the formula: integral(udv) = uv - integral(vdu)
-            // Work in Progress
-            Subtract<Multiply<Expression, Expression>, Integral<Expression, Expression>> subtractor {
-                Multiply<Expression, Expression> {
-                    *u,
-                    *dv },
-                Integral {}
+
+            Integral<Expression, Expression> vdu {
+                Multiply<Expression, Expression> {*v, *du},
+                integrationVariable
             };
 
+            // TODO: Make test cases in the event that IBP needs to be done again on integrated_vdu
+            auto integrated_vdu = vdu.Integrate(integrationVariable);
 
+            // Apply the formula: integral(udv) = uv - integral(vdu)
+            Subtract<Multiply<Expression, Expression>, Expression> subtractor {
+                Multiply<Expression, Expression> { *u, *v },
+                *integrated_vdu
+            };
 
-            // test code to base the structure of above tree off of
-            // Multiply<Oasis::Expression> subtract {
-            //     Multiply<Expression, Expression> {
-            //         Real { 1.0 },
-            //         Real { 2.0 } },
-            //     Real { 3.0 }
-            // };
-
-
-
-
+            return subtractor.Accept(simplifyVisitor).value().Copy();
 
 
         }
@@ -588,7 +591,7 @@ auto Multiply<Expression>::Differentiate(const Expression& differentiationVariab
             auto num = constant->GetMostSigOp();
             auto differentiate = (*exp).Differentiate(differentiationVariable);
             if (auto add = RecursiveCast<Expression>(*differentiate); add != nullptr) {
-                return std::make_unique<Multiply<Real, Expression>>(Multiply<Real, Expression> { Real { num.GetValue() }, *(add->Simplify()) })->Simplify();
+                return std::make_unique<Multiply<Real, Expression>>(Multiply<Real, Expression> { Real { num.GetValue() }, *(add->Accept(simplifyVisitor).value()) })->Accept(simplifyVisitor).value();
             }
 
         }
@@ -605,7 +608,7 @@ auto Multiply<Expression>::Differentiate(const Expression& differentiationVariab
                     Multiply<Expression, Expression>>>(Add<Multiply<Expression, Expression>, Multiply<Expression, Expression>> { Multiply<Expression, Expression> { *add,
                                                                                                                                      *right },
                                                            Multiply<Expression, Expression> { *add2, *left } })
-                    ->Simplify();
+                    ->Accept(simplifyVisitor).value();
             }
         }
     }
